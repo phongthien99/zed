@@ -1159,6 +1159,13 @@
     },
   },
   {
+    "context": "ExtensionPanelTextArea > Editor && mode == auto_height",
+    "use_key_equivalents": true,
+    "bindings": {
+      "cmd-enter": "menu::SecondaryConfirm",
+    },
+  },
+  {
     "context": "GitCommit > Editor && mode == auto_height",
     "use_key_equivalents": true,
     "bindings": {
