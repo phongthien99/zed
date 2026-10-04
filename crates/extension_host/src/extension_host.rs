@@ -17,7 +17,7 @@ use extension::extension_builder::{CompileExtensionOptions, ExtensionBuilder};
 use extension::{
     ExtensionContextServerProxy, ExtensionDebugAdapterProviderProxy, ExtensionEvents,
     ExtensionGrammarProxy, ExtensionHostProxy, ExtensionLanguageProxy,
-    ExtensionLanguageServerProxy, ExtensionSnippetProxy, ExtensionThemeProxy,
+    ExtensionLanguageServerProxy, ExtensionPanelProxy, ExtensionSnippetProxy, ExtensionThemeProxy,
 };
 use fs::{Fs, RemoveOptions, RenameOptions};
 use futures::future::{Shared, join_all};
@@ -74,6 +74,8 @@ pub use extension::{
 pub use extension_settings::ExtensionSettings;
 
 use crate::headless_host::hash_directory_contents;
+
+const PANEL_MIN_WASM_API_VERSION: Version = Version::new(0, 9, 0);
 
 pub const RELOAD_DEBOUNCE_DURATION: Duration = Duration::from_millis(200);
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
@@ -1387,6 +1389,9 @@ impl ExtensionStore {
             for server_id in extension.manifest.context_servers.keys() {
                 self.proxy.unregister_context_server(server_id.clone(), cx);
             }
+            if !extension.manifest.panels.is_empty() {
+                self.proxy.unregister_panels(extension_id.clone(), cx);
+            }
             for adapter in extension.manifest.debug_adapters.keys() {
                 self.proxy.unregister_debug_adapter(adapter.clone());
             }
@@ -1668,6 +1673,26 @@ impl ExtensionStore {
                     for id in manifest.context_servers.keys() {
                         this.proxy
                             .register_context_server(extension.clone(), id.clone(), cx);
+                    }
+
+                    if !manifest.panels.is_empty() {
+                        if wasm_extension.zed_api_version < PANEL_MIN_WASM_API_VERSION {
+                            log::warn!(
+                                "extension {} declares panels but targets zed_extension_api {}; panels require {} or later",
+                                manifest.id,
+                                wasm_extension.zed_api_version,
+                                PANEL_MIN_WASM_API_VERSION,
+                            );
+                        } else {
+                            for (panel_id, entry) in &manifest.panels {
+                                this.proxy.register_panel(
+                                    extension.clone(),
+                                    panel_id.clone(),
+                                    entry.clone(),
+                                    cx,
+                                );
+                            }
+                        }
                     }
 
                     for (debug_adapter, meta) in &manifest.debug_adapters {

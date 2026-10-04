@@ -1,8 +1,10 @@
 //! The Zed Rust Extension API allows you write extensions for [Zed](https://zed.dev/) in Rust.
 
+pub mod git;
 pub mod http_client;
 pub mod process;
 pub mod settings;
+pub mod ui;
 
 use core::fmt;
 
@@ -281,6 +283,27 @@ pub trait Extension: Send + Sync {
     ) -> Result<DebugRequest, String> {
         Err("`run_dap_locator` not implemented".to_string())
     }
+
+    /// Returns the UI tree to display in the given instance of the specified panel.
+    fn panel_render(&mut self, panel_id: &str, _instance: ui::PanelInstance) -> Result<ui::Tree> {
+        Err(format!("panel `{panel_id}` is not implemented"))
+    }
+
+    /// Handles a UI event that occurred in the given instance of the specified panel.
+    ///
+    /// Zed calls [`Extension::panel_render`] again after the event has been handled.
+    fn panel_handle_event(
+        &mut self,
+        _panel_id: &str,
+        _instance: ui::PanelInstance,
+        _event: ui::Event,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called when an instance of the specified panel is destroyed, such as when its
+    /// window closes, so that state kept for it can be discarded.
+    fn panel_release(&mut self, _panel_id: &str, _instance: ui::PanelInstance) {}
 }
 
 /// Registers the provided type as a Zed extension.
@@ -355,7 +378,7 @@ pub static ZED_API_VERSION: [u8; 6] = *include_bytes!(concat!(env!("OUT_DIR"), "
 mod wit {
     wit_bindgen::generate!({
         skip: ["init-extension"],
-        path: "./wit/since_v0.8.0",
+        path: "./wit/since_v0.9.0",
     });
 }
 
@@ -558,6 +581,27 @@ impl wit::Guest for Component {
         build_task: TaskTemplate,
     ) -> Result<DebugRequest, String> {
         extension().run_dap_locator(locator_name, build_task)
+    }
+
+    fn panel_render(
+        panel_id: String,
+        instance: wit::zed::extension::ui::PanelInstance,
+    ) -> Result<wit::zed::extension::ui::UiTree, String> {
+        extension()
+            .panel_render(&panel_id, instance)
+            .map(Into::into)
+    }
+
+    fn panel_handle_event(
+        panel_id: String,
+        instance: wit::zed::extension::ui::PanelInstance,
+        event: wit::zed::extension::ui::UiEvent,
+    ) -> Result<(), String> {
+        extension().panel_handle_event(&panel_id, instance, event.into())
+    }
+
+    fn panel_release(panel_id: String, instance: wit::zed::extension::ui::PanelInstance) {
+        extension().panel_release(&panel_id, instance)
     }
 }
 

@@ -1,0 +1,171 @@
+interface git {
+    use ui.{panel-instance};
+
+    /// Identifies a Git repository within the project of a panel instance.
+    type repository-id = u64;
+
+    /// The branch that a local branch tracks.
+    record upstream {
+        /// The name of the upstream branch, such as `origin/main`.
+        name: string,
+        /// The number of local commits not yet in the upstream branch.
+        ahead: u32,
+        /// The number of upstream commits not yet in the local branch.
+        behind: u32,
+    }
+
+    /// A Git repository in the project of a panel instance.
+    record repository {
+        id: repository-id,
+        /// The absolute path of the repository's working directory.
+        work-directory: string,
+        /// The name of the checked-out branch, or `none` when `HEAD` is detached.
+        branch: option<string>,
+        /// The upstream of the checked-out branch, if it has one that exists.
+        upstream: option<upstream>,
+        /// Whether this is the repository the user is currently working in.
+        active: bool,
+    }
+
+    /// A branch of a repository.
+    record branch {
+        /// The branch's name, such as `main` or `origin/main` for a remote branch.
+        name: string,
+        /// Whether the branch is checked out.
+        is-head: bool,
+        /// Whether the branch is a remote-tracking branch.
+        is-remote: bool,
+        /// The upstream of a local branch, if it has one that exists.
+        upstream: option<upstream>,
+    }
+
+    /// How a file differs between two versions.
+    enum status-code {
+        unmodified,
+        modified,
+        type-changed,
+        added,
+        deleted,
+        renamed,
+        copied,
+    }
+
+    /// The status of a tracked file.
+    record tracked-status {
+        /// How the index differs from `HEAD`.
+        index: status-code,
+        /// How the working tree differs from the index.
+        worktree: status-code,
+    }
+
+    /// The status of a file.
+    variant file-status {
+        /// The file is not tracked.
+        untracked,
+        /// The file is ignored.
+        ignored,
+        /// The file has merge conflicts.
+        conflicted,
+        /// The file is tracked.
+        tracked(tracked-status),
+    }
+
+    /// A file that differs from `HEAD`.
+    record status-entry {
+        /// The path of the file relative to the repository's working directory,
+        /// using `/` as the separator.
+        path: string,
+        status: file-status,
+    }
+
+    /// Which versions of a file a diff compares.
+    enum diff-kind {
+        /// `HEAD` against the working tree, in a view of the single file.
+        uncommitted,
+        /// `HEAD` against the index, in the view of all staged changes.
+        staged,
+        /// The index against the working tree, in the view of all unstaged changes.
+        unstaged,
+    }
+
+    /// Options for creating a commit.
+    record commit-options {
+        /// Whether to amend the latest commit instead of creating a new one.
+        amend: bool,
+        /// Whether to add a `Signed-off-by` trailer.
+        signoff: bool,
+    }
+
+    /// Returns the Git repositories in the project of the given panel instance.
+    repositories: func(instance: panel-instance) -> result<list<repository>, string>;
+
+    /// Returns the files in the given repository that differ from `HEAD`.
+    status: func(instance: panel-instance, repository: repository-id) -> result<list<status-entry>, string>;
+
+    /// Adds the given files to the index.
+    stage: func(instance: panel-instance, repository: repository-id, paths: list<string>) -> result<_, string>;
+
+    /// Removes the given files from the index.
+    unstage: func(instance: panel-instance, repository: repository-id, paths: list<string>) -> result<_, string>;
+
+    /// Adds every changed file to the index.
+    stage-all: func(instance: panel-instance, repository: repository-id) -> result<_, string>;
+
+    /// Removes every file from the index.
+    unstage-all: func(instance: panel-instance, repository: repository-id) -> result<_, string>;
+
+    /// Discards the changes to the given files after asking the user to confirm.
+    ///
+    /// Tracked files are restored to their state in `HEAD`, and untracked files are moved
+    /// to the trash. Returns `false` if the user cancelled.
+    discard: func(instance: panel-instance, repository: repository-id, paths: list<string>) -> result<bool, string>;
+
+    /// Commits the staged changes with the given message.
+    commit: func(instance: panel-instance, repository: repository-id, message: string, options: commit-options) -> result<_, string>;
+
+    /// Opens the changes to the given file in a diff view.
+    open-diff: func(instance: panel-instance, repository: repository-id, path: string, kind: diff-kind) -> result<_, string>;
+
+    /// Opens the given file in an editor.
+    open-file: func(instance: panel-instance, repository: repository-id, path: string) -> result<_, string>;
+
+    /// Fetches from all remotes.
+    fetch: func(instance: panel-instance, repository: repository-id) -> result<_, string>;
+
+    /// Pulls the checked-out branch from its remote, rebasing local commits if `rebase`.
+    ///
+    /// When there are several remotes and the branch has no upstream, the user picks one.
+    pull: func(instance: panel-instance, repository: repository-id, rebase: bool) -> result<_, string>;
+
+    /// Pushes the checked-out branch, setting its upstream if it has none.
+    ///
+    /// When there are several remotes, the user picks one.
+    push: func(instance: panel-instance, repository: repository-id, force: bool) -> result<_, string>;
+
+    /// Returns the local and remote branches of the given repository.
+    branches: func(instance: panel-instance, repository: repository-id) -> result<list<branch>, string>;
+
+    /// Checks out the given branch.
+    checkout-branch: func(instance: panel-instance, repository: repository-id, name: string) -> result<_, string>;
+
+    /// Creates a branch from `HEAD` and checks it out.
+    create-branch: func(instance: panel-instance, repository: repository-id, name: string) -> result<_, string>;
+
+    /// Stashes all changes, including untracked files.
+    stash-all: func(instance: panel-instance, repository: repository-id) -> result<_, string>;
+
+    /// Applies the latest stash and removes it from the stash list.
+    stash-pop: func(instance: panel-instance, repository: repository-id) -> result<_, string>;
+
+    /// Starts writing a commit message for the given repository with the commit message
+    /// model configured in Zed's AI settings.
+    ///
+    /// The message describes the staged changes, or all changes when nothing is staged.
+    /// This returns once the operation has started; the panel instance then receives a
+    /// `task-completed` event with `task-id` and the message.
+    generate-commit-message: func(instance: panel-instance, repository: repository-id, task-id: string) -> result<_, string>;
+
+    /// Creates a Git repository in the first folder of the project of the given panel
+    /// instance.
+    init-repository: func(instance: panel-instance) -> result<_, string>;
+}

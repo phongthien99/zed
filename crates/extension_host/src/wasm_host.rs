@@ -8,8 +8,8 @@ use dap::{DebugRequest, StartDebuggingRequestArgumentsRequest};
 use extension::{
     CodeLabel, Command, Completion, ContextServerConfiguration, DebugAdapterBinary,
     DebugTaskDefinition, ExtensionCapability, ExtensionHostProxy, KeyValueStoreDelegate,
-    ProjectDelegate, SlashCommand, SlashCommandArgumentCompletion, SlashCommandOutput, Symbol,
-    WorktreeDelegate,
+    PanelInstanceId, ProjectDelegate, SlashCommand, SlashCommandArgumentCompletion,
+    SlashCommandOutput, Symbol, UiEvent, UiTree, WorktreeDelegate,
 };
 use fs::Fs;
 use futures::future::LocalBoxFuture;
@@ -525,6 +525,53 @@ impl extension::Extension for WasmExtension {
                     .call_run_dap_locator(store, locator_name, config)
                     .await?
                     .map_err(|err| store.data().extension_error(err))
+            }
+            .boxed()
+        })
+        .await?
+    }
+
+    async fn panel_render(&self, panel_id: Arc<str>, instance: PanelInstanceId) -> Result<UiTree> {
+        self.call(move |extension, store| {
+            async move {
+                let tree: UiTree = extension
+                    .call_panel_render(store, &panel_id, instance)
+                    .await?
+                    .map_err(|err| store.data().extension_error(err))?;
+                tree.validate()
+                    .with_context(|| format!("invalid UI tree for panel `{panel_id}`"))?;
+                anyhow::Ok(tree)
+            }
+            .boxed()
+        })
+        .await?
+    }
+
+    async fn panel_handle_event(
+        &self,
+        panel_id: Arc<str>,
+        instance: PanelInstanceId,
+        event: UiEvent,
+    ) -> Result<()> {
+        self.call(move |extension, store| {
+            async move {
+                extension
+                    .call_panel_handle_event(store, &panel_id, instance, event)
+                    .await?
+                    .map_err(|err| store.data().extension_error(err))
+            }
+            .boxed()
+        })
+        .await?
+    }
+
+    async fn panel_release(&self, panel_id: Arc<str>, instance: PanelInstanceId) -> Result<()> {
+        self.call(move |extension, store| {
+            async move {
+                extension
+                    .call_panel_release(store, &panel_id, instance)
+                    .await?;
+                anyhow::Ok(())
             }
             .boxed()
         })

@@ -179,6 +179,25 @@ pub trait Extension: Send + Sync + 'static {
         locator_name: String,
         config: SpawnInTerminal,
     ) -> Result<DebugRequest>;
+
+    /// Implementations must return a tree that passes [`UiTree::validate`], since panels
+    /// render the tree without validating it again.
+    async fn panel_render(&self, panel_id: Arc<str>, _instance: PanelInstanceId) -> Result<UiTree> {
+        bail!("extension does not implement panel `{panel_id}`")
+    }
+
+    async fn panel_handle_event(
+        &self,
+        panel_id: Arc<str>,
+        _instance: PanelInstanceId,
+        _event: UiEvent,
+    ) -> Result<()> {
+        bail!("extension does not implement panel `{panel_id}`")
+    }
+
+    async fn panel_release(&self, _panel_id: Arc<str>, _instance: PanelInstanceId) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub fn parse_wasm_extension_version(extension_id: &str, wasm_bytes: &[u8]) -> Result<Version> {

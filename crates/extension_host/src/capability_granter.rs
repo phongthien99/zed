@@ -64,6 +64,20 @@ impl CapabilityGranter {
         Ok(())
     }
 
+    pub fn grant_git(&self) -> Result<()> {
+        self.manifest.allow_git()?;
+
+        if !self
+            .granted_capabilities
+            .iter()
+            .any(|capability| matches!(capability, ExtensionCapability::Git))
+        {
+            bail!("capability for git is not granted by the extension host");
+        }
+
+        Ok(())
+    }
+
     pub fn grant_npm_install_package(&self, package_name: &str) -> Result<()> {
         let is_allowed = self
             .granted_capabilities
@@ -113,6 +127,7 @@ mod tests {
             debug_adapters: Default::default(),
             debug_locators: Default::default(),
             language_model_providers: BTreeMap::default(),
+            panels: BTreeMap::default(),
         }
     }
 
@@ -149,5 +164,28 @@ mod tests {
             manifest,
         );
         assert!(granter.grant_exec("ls", &["-la"]).is_ok());
+    }
+
+    #[test]
+    fn test_grant_git() {
+        // It returns an error when the manifest doesn't list the capability.
+        let granter = CapabilityGranter::new(
+            vec![ExtensionCapability::Git],
+            Arc::new(extension_manifest()),
+        );
+        assert!(granter.grant_git().is_err());
+
+        let manifest = Arc::new(ExtensionManifest {
+            capabilities: vec![ExtensionCapability::Git],
+            ..extension_manifest()
+        });
+
+        // It returns an error when the extension host has no granted capabilities.
+        let granter = CapabilityGranter::new(Vec::new(), manifest.clone());
+        assert!(granter.grant_git().is_err());
+
+        // It succeeds when both the manifest and the extension host list it.
+        let granter = CapabilityGranter::new(vec![ExtensionCapability::Git], manifest);
+        assert!(granter.grant_git().is_ok());
     }
 }

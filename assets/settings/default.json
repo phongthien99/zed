@@ -2233,6 +2233,7 @@
     { "kind": "process:exec", "command": "*", "args": ["**"] },
     { "kind": "download_file", "host": "*", "path": ["**"] },
     { "kind": "npm:install", "package": "*" },
+    { "kind": "git" },
   ],
   // Controls how completions are processed for this language.
   "completions": {

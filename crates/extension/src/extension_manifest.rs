@@ -120,6 +120,8 @@ pub struct ExtensionManifest {
     pub debug_locators: BTreeMap<Arc<str>, DebugLocatorManifestEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub language_model_providers: BTreeMap<Arc<str>, LanguageModelProviderManifestEntry>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub panels: BTreeMap<Arc<str>, PanelManifestEntry>,
 }
 
 impl ExtensionManifest {
@@ -179,6 +181,17 @@ impl ExtensionManifest {
             );
         }
 
+        Ok(())
+    }
+
+    pub fn allow_git(&self) -> Result<()> {
+        if !self
+            .capabilities
+            .iter()
+            .any(|capability| matches!(capability, ExtensionCapability::Git))
+        {
+            bail!("capability for git was not listed in the extension manifest");
+        }
         Ok(())
     }
 
@@ -362,6 +375,24 @@ impl LanguageServerManifestEntry {
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub struct ContextServerManifestEntry {}
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelManifestPosition {
+    #[default]
+    Left,
+    Right,
+    Bottom,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
+pub struct PanelManifestEntry {
+    pub title: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub default_position: PanelManifestPosition,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub struct SlashCommandManifestEntry {
     pub description: String,
@@ -456,6 +487,7 @@ fn manifest_from_old_manifest(
         debug_adapters: Default::default(),
         debug_locators: Default::default(),
         language_model_providers: Default::default(),
+        panels: Default::default(),
     }
 }
 
@@ -490,6 +522,7 @@ mod tests {
             debug_adapters: Default::default(),
             debug_locators: Default::default(),
             language_model_providers: BTreeMap::default(),
+            panels: BTreeMap::default(),
         }
     }
 

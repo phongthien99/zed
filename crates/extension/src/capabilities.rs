@@ -17,4 +17,7 @@ pub enum ExtensionCapability {
     DownloadFile(DownloadFileCapability),
     #[serde(rename = "npm:install")]
     NpmInstallPackage(NpmInstallPackageCapability),
+    /// Access to the Git repositories of the projects that the extension's panels are
+    /// shown in, including changing the index and creating commits.
+    Git,
 }

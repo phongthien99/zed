@@ -8,7 +8,7 @@ use language::{BinaryStatus, LanguageLoader, LanguageMatcher, LanguageName};
 use lsp::LanguageServerName;
 use parking_lot::RwLock;
 
-use crate::Extension;
+use crate::{Extension, PanelInstanceId, PanelManifestEntry, git};
 
 #[derive(Default)]
 struct GlobalExtensionHostProxy(Arc<ExtensionHostProxy>);
@@ -32,6 +32,8 @@ pub struct ExtensionHostProxy {
     context_server_proxy: RwLock<Option<Arc<dyn ExtensionContextServerProxy>>>,
     debug_adapter_provider_proxy: RwLock<Option<Arc<dyn ExtensionDebugAdapterProviderProxy>>>,
     language_model_provider_proxy: RwLock<Option<Arc<dyn ExtensionLanguageModelProviderProxy>>>,
+    panel_proxy: RwLock<Option<Arc<dyn ExtensionPanelProxy>>>,
+    git_proxy: RwLock<Option<Arc<dyn ExtensionGitProxy>>>,
 }
 
 impl ExtensionHostProxy {
@@ -57,6 +59,8 @@ impl ExtensionHostProxy {
             context_server_proxy: RwLock::default(),
             debug_adapter_provider_proxy: RwLock::default(),
             language_model_provider_proxy: RwLock::default(),
+            panel_proxy: RwLock::default(),
+            git_proxy: RwLock::default(),
         }
     }
 
@@ -97,6 +101,14 @@ impl ExtensionHostProxy {
         self.language_model_provider_proxy
             .write()
             .replace(Arc::new(proxy));
+    }
+
+    pub fn register_panel_proxy(&self, proxy: impl ExtensionPanelProxy) {
+        self.panel_proxy.write().replace(Arc::new(proxy));
+    }
+
+    pub fn register_git_proxy(&self, proxy: impl ExtensionGitProxy) {
+        self.git_proxy.write().replace(Arc::new(proxy));
     }
 }
 
@@ -474,5 +486,218 @@ impl ExtensionLanguageModelProviderProxy for ExtensionHostProxy {
         };
 
         proxy.unregister_language_model_provider(provider_id, cx)
+    }
+}
+
+pub trait ExtensionPanelProxy: Send + Sync + 'static {
+    fn register_panel(
+        &self,
+        extension: Arc<dyn Extension>,
+        panel_id: Arc<str>,
+        entry: PanelManifestEntry,
+        cx: &mut App,
+    );
+
+    fn unregister_panels(&self, extension_id: Arc<str>, cx: &mut App);
+
+    fn request_panel_render(&self, extension_id: Arc<str>, panel_id: Arc<str>, cx: &mut App);
+}
+
+impl ExtensionPanelProxy for ExtensionHostProxy {
+    fn register_panel(
+        &self,
+        extension: Arc<dyn Extension>,
+        panel_id: Arc<str>,
+        entry: PanelManifestEntry,
+        cx: &mut App,
+    ) {
+        let Some(proxy) = self.panel_proxy.read().clone() else {
+            return;
+        };
+
+        proxy.register_panel(extension, panel_id, entry, cx)
+    }
+
+    fn unregister_panels(&self, extension_id: Arc<str>, cx: &mut App) {
+        let Some(proxy) = self.panel_proxy.read().clone() else {
+            return;
+        };
+
+        proxy.unregister_panels(extension_id, cx)
+    }
+
+    fn request_panel_render(&self, extension_id: Arc<str>, panel_id: Arc<str>, cx: &mut App) {
+        let Some(proxy) = self.panel_proxy.read().clone() else {
+            return;
+        };
+
+        proxy.request_panel_render(extension_id, panel_id, cx)
+    }
+}
+
+/// Gives extension panels access to the Git repositories of the project they are shown in.
+///
+/// Every method is scoped to a panel instance owned by the given extension, so that an
+/// extension can't reach projects through another extension's panels.
+pub trait ExtensionGitProxy: Send + Sync + 'static {
+    fn repositories(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        cx: &mut App,
+    ) -> Task<Result<Vec<git::Repository>>>;
+
+    fn status(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        cx: &mut App,
+    ) -> Task<Result<Vec<git::StatusEntry>>>;
+
+    fn branches(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        cx: &mut App,
+    ) -> Task<Result<Vec<git::Branch>>>;
+
+    fn init_repository(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        cx: &mut App,
+    ) -> Task<Result<()>>;
+
+    /// Starts generating a commit message, which is delivered to the panel instance as a
+    /// [`crate::UiEvent::TaskCompleted`] event with the given `task_id`.
+    fn generate_commit_message(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        task_id: String,
+        cx: &mut App,
+    ) -> Result<()>;
+
+    /// Returns `false` if the user declined to discard the changes.
+    fn discard(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        paths: Vec<String>,
+        cx: &mut App,
+    ) -> Task<Result<bool>>;
+
+    fn operation(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        operation: git::Operation,
+        cx: &mut App,
+    ) -> Task<Result<()>>;
+}
+
+impl ExtensionHostProxy {
+    fn git_proxy(&self) -> Result<Arc<dyn ExtensionGitProxy>> {
+        self.git_proxy
+            .read()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("git is not available for extensions"))
+    }
+}
+
+impl ExtensionGitProxy for ExtensionHostProxy {
+    fn repositories(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        cx: &mut App,
+    ) -> Task<Result<Vec<git::Repository>>> {
+        match self.git_proxy() {
+            Ok(proxy) => proxy.repositories(extension_id, instance, cx),
+            Err(error) => Task::ready(Err(error)),
+        }
+    }
+
+    fn status(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        cx: &mut App,
+    ) -> Task<Result<Vec<git::StatusEntry>>> {
+        match self.git_proxy() {
+            Ok(proxy) => proxy.status(extension_id, instance, repository, cx),
+            Err(error) => Task::ready(Err(error)),
+        }
+    }
+
+    fn branches(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        cx: &mut App,
+    ) -> Task<Result<Vec<git::Branch>>> {
+        match self.git_proxy() {
+            Ok(proxy) => proxy.branches(extension_id, instance, repository, cx),
+            Err(error) => Task::ready(Err(error)),
+        }
+    }
+
+    fn init_repository(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        match self.git_proxy() {
+            Ok(proxy) => proxy.init_repository(extension_id, instance, cx),
+            Err(error) => Task::ready(Err(error)),
+        }
+    }
+
+    fn generate_commit_message(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        task_id: String,
+        cx: &mut App,
+    ) -> Result<()> {
+        self.git_proxy()?
+            .generate_commit_message(extension_id, instance, repository, task_id, cx)
+    }
+
+    fn discard(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        paths: Vec<String>,
+        cx: &mut App,
+    ) -> Task<Result<bool>> {
+        match self.git_proxy() {
+            Ok(proxy) => proxy.discard(extension_id, instance, repository, paths, cx),
+            Err(error) => Task::ready(Err(error)),
+        }
+    }
+
+    fn operation(
+        &self,
+        extension_id: Arc<str>,
+        instance: PanelInstanceId,
+        repository: git::RepositoryId,
+        operation: git::Operation,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        match self.git_proxy() {
+            Ok(proxy) => proxy.operation(extension_id, instance, repository, operation, cx),
+            Err(error) => Task::ready(Err(error)),
+        }
     }
 }

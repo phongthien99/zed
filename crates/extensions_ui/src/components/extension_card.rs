@@ -506,6 +506,7 @@ impl Component for ExtensionCard {
                 debug_adapters: Default::default(),
                 debug_locators: Default::default(),
                 language_model_providers: Default::default(),
+                panels: Default::default(),
             })
         }
 

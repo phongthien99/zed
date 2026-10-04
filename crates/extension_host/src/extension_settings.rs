@@ -58,6 +58,7 @@ impl Settings for ExtensionSettings {
                             package,
                         })
                     }
+                    settings::ExtensionCapabilityContent::Git => ExtensionCapability::Git,
                 })
                 .collect(),
         }

@@ -16,13 +16,14 @@ use collections::{BTreeMap, HashMap, HashSet};
 use extension::{
     BuildTaskTemplate, CodeLabel, Command, Completion, ContextServerConfiguration,
     DebugAdapterBinary, DebugRequest, DebugScenario, DebugTaskDefinition, Extension,
-    ExtensionHostProxy, KeyValueStoreDelegate, LibManifestEntry, ProjectDelegate, SlashCommand,
+    ExtensionHostProxy, ExtensionPanelProxy, KeyValueStoreDelegate, LibManifestEntry,
+    PanelManifestEntry, PanelManifestPosition, ProjectDelegate, SlashCommand,
     SlashCommandArgumentCompletion, SlashCommandOutput, StartDebuggingRequestArgumentsRequest,
-    Symbol, WorktreeDelegate,
+    Symbol, UiEvent, UiNode, UiTree, WorktreeDelegate,
 };
 use fs::{FakeFs, Fs, RealFs, RemoveOptions};
 use futures::{AsyncReadExt, FutureExt, StreamExt, io::BufReader};
-use gpui::{AppContext as _, BackgroundExecutor, Entity, TaskExt, TestAppContext};
+use gpui::{App, AppContext as _, BackgroundExecutor, Entity, TaskExt, TestAppContext};
 use http_client::{FakeHttpClient, Response};
 use language::{
     BinaryStatus, LanguageConfig, LanguageMatcher, LanguageName, LanguageRegistry, QueryFiles,
@@ -266,6 +267,115 @@ fn remote_sync_keeps_debug_adapters() {
     assert_eq!(remote_sync_extension_ids(&index), ["foo"]);
 }
 
+fn parse_test_manifest(manifest_body: &str) -> anyhow::Result<ExtensionManifest> {
+    let manifest = format!(
+        r#"
+        id = "panel-test"
+        name = "Panel Test"
+        version = "1.0.0"
+        schema_version = 1
+
+        {manifest_body}
+        "#
+    );
+    Ok(toml::from_str(&manifest)?)
+}
+
+#[test]
+fn manifest_without_panels_has_no_panels() -> anyhow::Result<()> {
+    let manifest = parse_test_manifest("")?;
+    assert!(manifest.panels.is_empty());
+    Ok(())
+}
+
+#[test]
+fn manifest_with_panels_parses_entries() -> anyhow::Result<()> {
+    let manifest = parse_test_manifest(
+        r#"
+        [panels.counter]
+        title = "Counter"
+        icon = "file_tree"
+        default_position = "right"
+
+        [panels.logs]
+        title = "Logs"
+        default_position = "bottom"
+        "#,
+    )?;
+
+    assert_eq!(
+        manifest.panels.get("counter"),
+        Some(&PanelManifestEntry {
+            title: "Counter".to_string(),
+            icon: Some("file_tree".to_string()),
+            default_position: PanelManifestPosition::Right,
+        })
+    );
+    assert_eq!(
+        manifest.panels.get("logs"),
+        Some(&PanelManifestEntry {
+            title: "Logs".to_string(),
+            icon: None,
+            default_position: PanelManifestPosition::Bottom,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn manifest_panel_defaults_to_left_position() -> anyhow::Result<()> {
+    let manifest = parse_test_manifest(
+        r#"
+        [panels.counter]
+        title = "Counter"
+        "#,
+    )?;
+
+    let entry = manifest
+        .panels
+        .get("counter")
+        .ok_or_else(|| anyhow::anyhow!("missing counter panel"))?;
+    assert_eq!(entry.default_position, PanelManifestPosition::Left);
+    assert_eq!(entry.icon, None);
+    Ok(())
+}
+
+#[test]
+fn manifest_panel_rejects_unknown_position() {
+    let result = parse_test_manifest(
+        r#"
+        [panels.counter]
+        title = "Counter"
+        default_position = "center"
+        "#,
+    );
+    assert!(result.is_err());
+}
+
+#[derive(Clone, Default)]
+struct RecordingPanelProxy {
+    registered_panels: Arc<Mutex<Vec<(Arc<dyn Extension>, Arc<str>)>>>,
+    unregistered_extensions: Arc<Mutex<Vec<Arc<str>>>>,
+}
+
+impl ExtensionPanelProxy for RecordingPanelProxy {
+    fn register_panel(
+        &self,
+        extension: Arc<dyn Extension>,
+        panel_id: Arc<str>,
+        _entry: PanelManifestEntry,
+        _cx: &mut App,
+    ) {
+        self.registered_panels.lock().push((extension, panel_id));
+    }
+
+    fn unregister_panels(&self, extension_id: Arc<str>, _cx: &mut App) {
+        self.unregistered_extensions.lock().push(extension_id);
+    }
+
+    fn request_panel_render(&self, _extension_id: Arc<str>, _panel_id: Arc<str>, _cx: &mut App) {}
+}
+
 #[gpui::test]
 async fn test_extension_store(cx: &mut TestAppContext) {
     init_test(cx);
@@ -401,6 +511,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         debug_adapters: Default::default(),
                         debug_locators: Default::default(),
                         language_model_providers: BTreeMap::default(),
+                        panels: BTreeMap::default(),
                     }),
                     dev: false,
                 },
@@ -432,6 +543,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         debug_adapters: Default::default(),
                         debug_locators: Default::default(),
                         language_model_providers: BTreeMap::default(),
+                        panels: BTreeMap::default(),
                     }),
                     dev: false,
                 },
@@ -618,6 +730,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                 debug_adapters: Default::default(),
                 debug_locators: Default::default(),
                 language_model_providers: BTreeMap::default(),
+                panels: BTreeMap::default(),
             }),
             dev: false,
         },
@@ -823,6 +936,8 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
     .await;
 
     let proxy = Arc::new(ExtensionHostProxy::new());
+    let panel_proxy = RecordingPanelProxy::default();
+    proxy.register_panel_proxy(panel_proxy.clone());
     let theme_registry = Arc::new(ThemeRegistry::new(Box::new(())));
     theme_extension::init(proxy.clone(), theme_registry.clone(), cx.executor());
     let language_registry = project.read_with(cx, |project, _cx| project.languages().clone());
@@ -1284,6 +1399,179 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
         .await
         .unwrap()
         .is_none()
+    );
+
+    assert!(panel_proxy.registered_panels.lock().is_empty());
+    assert!(panel_proxy.unregistered_extensions.lock().is_empty());
+}
+
+#[gpui::test]
+async fn test_extension_store_with_test_panel(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.executor().allow_parking();
+
+    async fn await_or_timeout<T>(
+        executor: &BackgroundExecutor,
+        what: &'static str,
+        seconds: u64,
+        future: impl std::future::Future<Output = T>,
+    ) -> T {
+        let timeout = executor.timer(std::time::Duration::from_secs(seconds));
+
+        futures::select! {
+            output = future.fuse() => output,
+            _ = futures::FutureExt::fuse(timeout) => panic!(
+                "[test_extension_store_with_test_panel] timed out after {seconds}s while {what}"
+            )
+        }
+    }
+
+    fn counter_label(tree: &UiTree) -> Option<&str> {
+        tree.nodes.iter().find_map(|node| match node {
+            UiNode::Label(label) if label.text.starts_with("Count: ") => Some(label.text.as_str()),
+            _ => None,
+        })
+    }
+
+    let root_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("extension_host crate should live two levels below the repository root");
+    let cache_dir = root_dir.join("target");
+    let test_panel_dir = root_dir.join("extensions").join("test-panel");
+
+    let fs = Arc::new(RealFs::new(None, cx.executor()));
+    let extensions_tree = TempTree::new(json!({
+        "installed": {},
+        "work": {}
+    }));
+    let extensions_dir = extensions_tree.path().canonicalize().unwrap();
+
+    let proxy = Arc::new(ExtensionHostProxy::new());
+    let panel_proxy = RecordingPanelProxy::default();
+    proxy.register_panel_proxy(panel_proxy.clone());
+
+    let user_agent = cx.update(|cx| {
+        format!(
+            "Zed/{} ({}; {})",
+            AppVersion::global(cx),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    });
+    let builder_client =
+        Arc::new(ReqwestClient::user_agent(&user_agent).expect("Could not create HTTP client"));
+
+    let extension_store = cx.new(|cx| {
+        ExtensionStore::new(
+            extensions_dir,
+            Some(cache_dir),
+            proxy,
+            fs,
+            FakeHttpClient::with_404_response(),
+            builder_client,
+            None,
+            NodeRuntime::unavailable(),
+            cx,
+        )
+    });
+
+    let mut events = cx.events(&extension_store);
+    let executor = cx.executor();
+    let _task = cx.executor().spawn(async move {
+        while let Some(event) = events.next().await {
+            if let Event::StartedReloading = event {
+                executor.advance_clock(RELOAD_DEBOUNCE_DURATION);
+            }
+        }
+    });
+
+    extension_store.update(cx, |_, cx| {
+        cx.subscribe(&extension_store, |_, _, event, _| {
+            if matches!(event, Event::ExtensionFailedToLoad(_)) {
+                panic!("extension failed to load");
+            }
+        })
+        .detach();
+    });
+
+    let executor = cx.executor();
+    await_or_timeout(
+        &executor,
+        "awaiting install_dev_extension",
+        120,
+        extension_store.update(cx, |store, cx| {
+            store.install_dev_extension(test_panel_dir.clone(), cx)
+        }),
+    )
+    .await
+    .unwrap();
+    cx.executor().run_until_parked();
+
+    let (extension, panel_id) = {
+        let registered_panels = panel_proxy.registered_panels.lock();
+        let registered: Vec<(Arc<str>, Arc<str>)> = registered_panels
+            .iter()
+            .map(|(extension, panel_id)| (extension.manifest().id.clone(), panel_id.clone()))
+            .collect();
+        assert_eq!(registered, [("test-panel".into(), "counter".into())]);
+        registered_panels
+            .first()
+            .cloned()
+            .expect("test-panel should register exactly one panel")
+    };
+
+    let tree = await_or_timeout(
+        &executor,
+        "awaiting first panel_render",
+        5,
+        extension.panel_render(panel_id.clone(), 1),
+    )
+    .await
+    .unwrap();
+    tree.validate().unwrap();
+    assert_eq!(counter_label(&tree), Some("Count: 0"));
+
+    await_or_timeout(
+        &executor,
+        "awaiting panel_handle_event",
+        5,
+        extension.panel_handle_event(panel_id.clone(), 1, UiEvent::Clicked("increment".into())),
+    )
+    .await
+    .unwrap();
+
+    let tree = await_or_timeout(
+        &executor,
+        "awaiting second panel_render",
+        5,
+        extension.panel_render(panel_id.clone(), 1),
+    )
+    .await
+    .unwrap();
+    tree.validate().unwrap();
+    assert_eq!(counter_label(&tree), Some("Count: 1"));
+
+    await_or_timeout(
+        &executor,
+        "awaiting uninstall_extension",
+        10,
+        extension_store.update(cx, |store, cx| {
+            store.uninstall_extension("test-panel".into(), cx)
+        }),
+    )
+    .await
+    .unwrap();
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        panel_proxy
+            .unregistered_extensions
+            .lock()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&str>>(),
+        ["test-panel"]
     );
 }
 
@@ -4095,6 +4383,7 @@ impl Extension for FakeExtension {
             debug_adapters: BTreeMap::default(),
             debug_locators: BTreeMap::default(),
             language_model_providers: BTreeMap::default(),
+            panels: BTreeMap::default(),
         })
     }
 

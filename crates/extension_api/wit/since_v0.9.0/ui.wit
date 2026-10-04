@@ -1,0 +1,297 @@
+interface ui {
+    /// The index of a node within `ui-tree.nodes`.
+    type node-id = u32;
+
+    /// Identifies one instance of a panel.
+    ///
+    /// Every workspace window gets its own instance of each panel, while all of them are
+    /// served by the same extension, so the instance tells the extension which one it is
+    /// rendering and which project host APIs such as `git` should act on.
+    type panel-instance = u64;
+
+    /// A color with a meaning, which the host maps to the current theme.
+    enum color {
+        default,
+        muted,
+        accent,
+        success,
+        warning,
+        error,
+        /// The color of files added in version control.
+        created,
+        /// The color of files modified in version control.
+        modified,
+        /// The color of files deleted in version control.
+        deleted,
+        /// The color of files with merge conflicts in version control.
+        conflict,
+        /// The color of files ignored by version control.
+        ignored,
+    }
+
+    /// The space between the children of a stack.
+    enum spacing {
+        none,
+        small,
+        medium,
+        large,
+    }
+
+    /// A stack of child nodes.
+    record stack {
+        children: list<node-id>,
+        gap: spacing,
+    }
+
+    /// The size of a label's text.
+    enum label-size {
+        default,
+        small,
+        x-small,
+    }
+
+    /// A text label.
+    record label {
+        /// The text displayed by the label.
+        text: string,
+        color: color,
+        size: label-size,
+        /// Whether the text is displayed in bold.
+        bold: bool,
+        /// Whether the text is struck through.
+        strikethrough: bool,
+    }
+
+    /// An icon displayed by a list item.
+    variant icon {
+        /// One of the host's named icons, such as `"git_branch"` or `"folder"`.
+        named(string),
+        /// The icon that the current icon theme uses for the file at the given path.
+        file(string),
+        /// The icon that the current icon theme uses for the directory at the given path.
+        ///
+        /// The open or closed variant is chosen from the list item's `expanded` state.
+        folder(string),
+    }
+
+    /// How prominently a button is displayed.
+    enum button-style {
+        /// A button with a subtle background.
+        default,
+        /// A filled button in the accent color, for the main action of a panel.
+        filled,
+        /// A button without a background until it is hovered.
+        subtle,
+    }
+
+    /// A selectable item in a menu.
+    record menu-item {
+        /// The identifier sent in a `clicked` event when the item is selected.
+        id: string,
+        /// The text displayed for the item.
+        label: string,
+        /// The named icon displayed before the label.
+        icon: option<string>,
+        /// Whether the item is disabled.
+        disabled: bool,
+        /// `none` for plain items, `some(checked)` for items showing a check mark.
+        checked: option<bool>,
+    }
+
+    /// An entry in a menu.
+    variant menu-entry {
+        /// An item that can be selected.
+        item(menu-item),
+        /// A line separating groups of items.
+        separator,
+        /// A heading for the items that follow.
+        header(string),
+    }
+
+    /// A clickable button.
+    record button {
+        /// The stable identifier used to route events for this button.
+        id: string,
+        /// The text displayed on the button.
+        label: string,
+        /// Whether the button is disabled.
+        disabled: bool,
+        /// The named icon displayed before the label.
+        icon: option<string>,
+        style: button-style,
+        /// Whether the button stretches to fill the width of its container.
+        full-width: bool,
+        /// The text displayed when the button is hovered.
+        tooltip: option<string>,
+        /// Entries of a dropdown menu opened from an arrow attached to the button's end.
+        ///
+        /// When empty, the button has no dropdown.
+        menu: list<menu-entry>,
+    }
+
+    /// A clickable button that only displays an icon.
+    record icon-button {
+        /// The stable identifier used to route events for this button.
+        id: string,
+        /// The named icon displayed on the button.
+        icon: string,
+        /// The text displayed when the button is hovered.
+        tooltip: option<string>,
+        /// Whether the button is disabled.
+        disabled: bool,
+        /// Entries of a menu that the button opens when clicked.
+        ///
+        /// When not empty, clicking the button opens the menu instead of producing a
+        /// `clicked` event.
+        menu: list<menu-entry>,
+    }
+
+    /// A text input.
+    record text-input {
+        /// The stable identifier used to route events for this input.
+        id: string,
+        /// The text displayed when the input is empty.
+        placeholder: string,
+        /// The current value of the input.
+        value: string,
+        /// Whether the input accepts several lines of text.
+        ///
+        /// A single-line input is submitted with enter. A multi-line input inserts a
+        /// newline on enter and is submitted with ctrl-enter (cmd-enter on macOS).
+        multi-line: bool,
+    }
+
+    /// A checkbox with a label.
+    record checkbox {
+        /// The stable identifier used to route events for this checkbox.
+        id: string,
+        /// The text displayed next to the checkbox.
+        label: string,
+        /// Whether the checkbox is checked.
+        checked: bool,
+    }
+
+    /// Short text displayed at the end of a list item, such as `M` for a modified file.
+    record decoration {
+        text: string,
+        color: color,
+    }
+
+    /// An item in a list, which may be nested to form a tree.
+    record list-item {
+        /// The stable identifier used to route events for this item.
+        id: string,
+        /// The text displayed for this item.
+        label: string,
+        /// The indentation level, used to display trees.
+        indent: u32,
+        /// The icon displayed next to the item.
+        icon: option<icon>,
+        /// Whether the item is selected.
+        selected: bool,
+        /// `none` for leaf items, `some(expanded)` for items that can be expanded or collapsed.
+        expanded: option<bool>,
+        /// Dimmed text displayed after the label, such as the directory containing a file.
+        description: option<string>,
+        label-color: color,
+        /// Whether the label is struck through, such as for a deleted file.
+        strikethrough: bool,
+        /// Short text displayed at the end of the item.
+        decoration: option<decoration>,
+        /// Buttons displayed at the end of the item while it is hovered.
+        ///
+        /// Clicking one produces a `clicked` event with the button's identifier rather
+        /// than the item's.
+        actions: list<icon-button>,
+        /// The text displayed when the item is hovered.
+        tooltip: option<string>,
+        /// Entries of the menu opened by right-clicking the item. When empty, the item
+        /// has no context menu.
+        context-menu: list<menu-entry>,
+    }
+
+    /// A node in a UI tree.
+    ///
+    /// Container nodes reference their children by index into `ui-tree.nodes`.
+    variant node {
+        /// A vertical stack of child nodes.
+        v-stack(stack),
+        /// A horizontal stack of child nodes.
+        h-stack(stack),
+        /// A text label.
+        label(label),
+        /// A clickable button.
+        button(button),
+        /// A clickable button that only displays an icon.
+        icon-button(icon-button),
+        /// A text input.
+        text-input(text-input),
+        /// A checkbox with a label.
+        checkbox(checkbox),
+        /// An item in a list.
+        list-item(list-item),
+        /// A visual separator.
+        divider,
+        /// Empty space that grows to fill its stack, pushing later siblings to the end.
+        spacer,
+    }
+
+    /// A UI tree stored as a flat arena of nodes, because WIT has no recursive types.
+    record ui-tree {
+        /// All of the nodes in the tree.
+        nodes: list<node>,
+        /// The index of the root node within `nodes`.
+        root: node-id,
+        /// A count shown on the panel's icon in the dock while the panel is closed, such
+        /// as the number of pending items.
+        badge: option<u32>,
+    }
+
+    /// An event concerning the value of a text input.
+    record input-event {
+        /// The identifier of the text input.
+        id: string,
+        /// The current value of the text input.
+        value: string,
+    }
+
+    /// An event concerning the state of a checkbox.
+    record checkbox-event {
+        /// The identifier of the checkbox.
+        id: string,
+        /// Whether the checkbox is now checked.
+        checked: bool,
+    }
+
+    /// The outcome of a long-running host operation that the extension started, such as
+    /// `git.generate-commit-message`.
+    record task-result {
+        /// The identifier the extension passed when starting the operation.
+        id: string,
+        /// The operation's output, or a description of why it failed.
+        output: result<string, string>,
+    }
+
+    /// An event produced by user interaction with a panel, or by the host.
+    variant ui-event {
+        /// The button, icon button, list item, list item action or menu item with the
+        /// given identifier was clicked.
+        clicked(string),
+        /// The value of a text input changed.
+        input-changed(input-event),
+        /// A text input was submitted.
+        input-submitted(input-event),
+        /// A checkbox was toggled.
+        checkbox-toggled(checkbox-event),
+        /// The list item with the given identifier was expanded or collapsed.
+        list-item-toggled(string),
+        /// A long-running operation started for this panel instance finished.
+        task-completed(task-result),
+    }
+
+    /// Requests that the host call `panel-render` again for every instance of the
+    /// given panel.
+    ///
+    /// This is useful when the panel's state changes for reasons other than a UI event.
+    request-render: func(panel-id: string);
+}

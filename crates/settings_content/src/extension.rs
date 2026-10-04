@@ -42,4 +42,6 @@ pub enum ExtensionCapabilityContent {
     NpmInstallPackage {
         package: String,
     },
+    /// Access to the Git repositories of the projects that extension panels are shown in.
+    Git,
 }
