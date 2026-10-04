@@ -36,6 +36,15 @@ pub use proto::PanelId;
 pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn persistent_name() -> &'static str;
     fn panel_key() -> &'static str;
+    /// Per-instance variant of `persistent_name`, for panel types that are instantiated
+    /// multiple times with different identities (such as extension-provided panels).
+    fn instance_persistent_name(&self) -> SharedString {
+        SharedString::new_static(Self::persistent_name())
+    }
+    /// Per-instance variant of `panel_key`, see `instance_persistent_name`.
+    fn instance_panel_key(&self) -> SharedString {
+        SharedString::new_static(Self::panel_key())
+    }
     /// The `Focusable::focus_handle` root identifies the panel's subtree for containment checks
     /// and must be tracked by the panel's root element. This method returns the handle that should
     /// receive focus when the panel is activated, such as a filter, commit, or message editor; it
@@ -70,6 +79,10 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     }
     fn icon(&self, window: &Window, cx: &App) -> Option<ui::IconName>;
     fn icon_tooltip(&self, window: &Window, cx: &App) -> Option<&'static str>;
+    /// Per-instance variant of `icon_tooltip` for tooltips that are not known statically.
+    fn instance_icon_tooltip(&self, window: &Window, cx: &App) -> Option<SharedString> {
+        self.icon_tooltip(window, cx).map(SharedString::new_static)
+    }
     fn toggle_action(&self) -> Box<dyn Action>;
     fn icon_label(&self, _window: &Window, _: &App) -> Option<String> {
         None
@@ -105,8 +118,8 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
 
 pub trait PanelHandle: Send + Sync {
     fn panel_id(&self) -> EntityId;
-    fn persistent_name(&self) -> &'static str;
-    fn panel_key(&self) -> &'static str;
+    fn persistent_name(&self, cx: &App) -> SharedString;
+    fn panel_key(&self, cx: &App) -> SharedString;
     fn position(&self, window: &Window, cx: &App) -> DockPosition;
     fn position_is_valid(&self, position: DockPosition, cx: &App) -> bool;
     fn set_position(&self, position: DockPosition, window: &mut Window, cx: &mut App);
@@ -123,7 +136,7 @@ pub trait PanelHandle: Send + Sync {
     fn has_flexible_size(&self, window: &Window, cx: &App) -> bool;
     fn set_flexible_size(&self, flexible: bool, window: &mut Window, cx: &mut App);
     fn icon(&self, window: &Window, cx: &App) -> Option<ui::IconName>;
-    fn icon_tooltip(&self, window: &Window, cx: &App) -> Option<&'static str>;
+    fn icon_tooltip(&self, window: &Window, cx: &App) -> Option<SharedString>;
     fn toggle_action(&self, window: &Window, cx: &App) -> Box<dyn Action>;
     fn icon_label(&self, window: &Window, cx: &App) -> Option<String>;
     fn panel_focus_handle(&self, cx: &App) -> FocusHandle;
@@ -159,12 +172,12 @@ where
         Entity::entity_id(self)
     }
 
-    fn persistent_name(&self) -> &'static str {
-        T::persistent_name()
+    fn persistent_name(&self, cx: &App) -> SharedString {
+        self.read(cx).instance_persistent_name()
     }
 
-    fn panel_key(&self) -> &'static str {
-        T::panel_key()
+    fn panel_key(&self, cx: &App) -> SharedString {
+        self.read(cx).instance_panel_key()
     }
 
     fn position(&self, window: &Window, cx: &App) -> DockPosition {
@@ -231,8 +244,8 @@ where
         self.read(cx).icon(window, cx)
     }
 
-    fn icon_tooltip(&self, window: &Window, cx: &App) -> Option<&'static str> {
-        self.read(cx).icon_tooltip(window, cx)
+    fn icon_tooltip(&self, window: &Window, cx: &App) -> Option<SharedString> {
+        self.read(cx).instance_icon_tooltip(window, cx)
     }
 
     fn toggle_action(&self, _: &Window, cx: &App) -> Box<dyn Action> {
@@ -410,7 +423,7 @@ fn resize_panel_entry(
     flex: Option<f32>,
     window: &mut Window,
     cx: &mut App,
-) -> (&'static str, PanelSizeState) {
+) -> (SharedString, PanelSizeState) {
     let size = size.map(|size| size.max(RESIZE_HANDLE_SIZE).round());
     let uses_flexible_width = panel_uses_flexible_width(position, entry.panel.as_ref(), window, cx);
     if uses_flexible_width {
@@ -419,7 +432,7 @@ fn resize_panel_entry(
         entry.size_state.size = size;
     }
     entry.panel.size_state_changed(window, cx);
-    (entry.panel.panel_key(), entry.size_state)
+    (entry.panel.panel_key(cx), entry.size_state)
 }
 
 impl Dock {
@@ -530,10 +543,10 @@ impl Dock {
             .position(|entry| entry.panel.to_any().downcast::<T>().is_ok())
     }
 
-    pub fn panel_index_for_persistent_name(&self, ui_name: &str, _cx: &App) -> Option<usize> {
+    pub fn panel_index_for_persistent_name(&self, ui_name: &str, cx: &App) -> Option<usize> {
         self.panel_entries
             .iter()
-            .position(|entry| entry.panel.persistent_name() == ui_name)
+            .position(|entry| entry.panel.persistent_name(cx).as_ref() == ui_name)
     }
 
     pub fn panel_index_for_proto_id(&self, panel_id: PanelId) -> Option<usize> {
@@ -790,8 +803,8 @@ impl Dock {
                 if cfg!(debug_assertions) {
                     panic!(
                         "Panels `{}` and `{}` have the same activation priority. Each panel must have a unique priority so the status bar order is deterministic.",
-                        T::panel_key(),
-                        self.panel_entries[ix].panel.panel_key()
+                        panel.read(cx).instance_panel_key(),
+                        self.panel_entries[ix].panel.panel_key(cx)
                     );
                 }
                 ix
@@ -923,6 +936,10 @@ impl Dock {
         } else {
             false
         }
+    }
+
+    pub fn panels(&self) -> impl Iterator<Item = &Arc<dyn PanelHandle>> {
+        self.panel_entries.iter().map(|entry| &entry.panel)
     }
 
     pub fn panels_len(&self) -> usize {
@@ -1074,7 +1091,7 @@ impl Dock {
         } else {
             entry.size_state.flex = current_flex;
         }
-        let panel_key = entry.panel.panel_key();
+        let panel_key = entry.panel.panel_key(cx);
         let size_state = entry.size_state;
         let workspace = self.workspace.clone();
         entry
@@ -1084,7 +1101,7 @@ impl Dock {
         cx.defer(move |cx| {
             if let Some(workspace) = workspace.upgrade() {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.persist_panel_size_state(panel_key, size_state, cx);
+                    workspace.persist_panel_size_state(&panel_key, size_state, cx);
                 });
             }
         });
@@ -1107,7 +1124,7 @@ impl Dock {
             cx.defer(move |cx| {
                 if let Some(workspace) = workspace.upgrade() {
                     workspace.update(cx, |workspace, cx| {
-                        workspace.persist_panel_size_state(panel_key, size_state, cx);
+                        workspace.persist_panel_size_state(&panel_key, size_state, cx);
                     });
                 }
             });
@@ -1200,7 +1217,7 @@ impl Dock {
             if let Some(workspace) = workspace.upgrade() {
                 workspace.update(cx, |workspace, cx| {
                     for (panel_key, size_state) in size_states_to_persist {
-                        workspace.persist_panel_size_state(panel_key, size_state, cx);
+                        workspace.persist_panel_size_state(&panel_key, size_state, cx);
                     }
                 });
             }
@@ -1250,7 +1267,7 @@ impl Dock {
 
     pub(crate) fn load_persisted_size_state(
         workspace: &Workspace,
-        panel_key: &'static str,
+        panel_key: &str,
         cx: &App,
     ) -> Option<PanelSizeState> {
         let workspace_id = workspace
@@ -1414,7 +1431,7 @@ impl Render for PanelButtons {
                         anyhow::anyhow!("can't render a panel button without an icon tooltip")
                     })
                     .log_err()?;
-                let name = entry.panel.persistent_name();
+                let name = entry.panel.persistent_name(cx);
                 let panel = entry.panel.clone();
                 let supports_flexible = panel.supports_flexible_size(cx);
                 let currently_flexible = panel.has_flexible_size(window, cx);
@@ -1432,14 +1449,14 @@ impl Render for PanelButtons {
                 } else {
                     let action = entry.panel.toggle_action(window, cx);
 
-                    (action, icon_tooltip.into())
+                    (action, icon_tooltip.clone())
                 };
 
                 let focus_handle = dock.focus_handle(cx);
                 let icon_label = entry.panel.icon_label(window, cx);
 
                 Some(
-                    right_click_menu(name)
+                    right_click_menu(name.clone())
                         .menu(move |window, cx| {
                             const POSITIONS: [DockPosition; 3] = [
                                 DockPosition::Left,
@@ -1533,11 +1550,11 @@ impl Render for PanelButtons {
                         .trigger(move |is_active, _window, _cx| {
                             // Include active state in element ID to invalidate the cached
                             // tooltip when panel state changes (e.g., via keyboard shortcut)
-                            let button = IconButton::new((name, is_active_button as u64), icon)
+                            let button = IconButton::new((name.clone(), is_active_button as usize), icon)
                                 .icon_size(IconSize::Small)
                                 .toggle_state(is_active_button)
                                 .tab_index(0isize)
-                                .aria_label(icon_tooltip)
+                                .aria_label(icon_tooltip.clone())
                                 .on_click({
                                     let action = action.boxed_clone();
                                     move |_, window, cx| {

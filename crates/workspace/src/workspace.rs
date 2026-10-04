@@ -2314,7 +2314,7 @@ impl Workspace {
         let left_visible = left_dock.is_open();
         let left_active_panel = left_dock
             .active_panel()
-            .map(|panel| panel.persistent_name().to_string());
+            .map(|panel| panel.persistent_name(cx).to_string());
         // `zoomed_position` is kept in sync with individual panel zoom state
         // by the dock code in `Dock::new` and `Dock::add_panel`.
         let left_dock_zoom = self.zoomed_position == Some(DockPosition::Left);
@@ -2323,14 +2323,14 @@ impl Workspace {
         let right_visible = right_dock.is_open();
         let right_active_panel = right_dock
             .active_panel()
-            .map(|panel| panel.persistent_name().to_string());
+            .map(|panel| panel.persistent_name(cx).to_string());
         let right_dock_zoom = self.zoomed_position == Some(DockPosition::Right);
 
         let bottom_dock = self.bottom_dock.read(cx);
         let bottom_visible = bottom_dock.is_open();
         let bottom_active_panel = bottom_dock
             .active_panel()
-            .map(|panel| panel.persistent_name().to_string());
+            .map(|panel| panel.persistent_name(cx).to_string());
         let bottom_dock_zoom = self.zoomed_position == Some(DockPosition::Bottom);
 
         DockStructure {
@@ -2469,7 +2469,7 @@ impl Workspace {
 
     pub fn persisted_panel_size_state(
         &self,
-        panel_key: &'static str,
+        panel_key: &str,
         cx: &App,
     ) -> Option<dock::PanelSizeState> {
         dock::Dock::load_persisted_size_state(self, panel_key, cx)
@@ -2519,7 +2519,8 @@ impl Workspace {
         });
 
         if did_set {
-            self.persist_panel_size_state(T::panel_key(), size_state, cx);
+            let panel_key = PanelHandle::panel_key(&panel, cx);
+            self.persist_panel_size_state(&panel_key, size_state, cx);
         }
 
         did_set
@@ -2665,18 +2666,17 @@ impl Workspace {
         let dock_position = panel.position(window, cx);
         let dock = self.dock_at_position(dock_position);
         let any_panel = panel.to_any();
-        let persisted_size_state =
-            self.persisted_panel_size_state(T::panel_key(), cx)
-                .or_else(|| {
-                    load_legacy_panel_size(T::panel_key(), dock_position, self, cx).map(|size| {
-                        let state = dock::PanelSizeState {
-                            size: Some(size),
-                            flex: None,
-                        };
-                        self.persist_panel_size_state(T::panel_key(), state, cx);
-                        state
-                    })
-                });
+        let panel_key = PanelHandle::panel_key(&panel, cx);
+        let persisted_size_state = self.persisted_panel_size_state(&panel_key, cx).or_else(|| {
+            load_legacy_panel_size(&panel_key, dock_position, self, cx).map(|size| {
+                let state = dock::PanelSizeState {
+                    size: Some(size),
+                    flex: None,
+                };
+                self.persist_panel_size_state(&panel_key, state, cx);
+                state
+            })
+        });
 
         dock.update(cx, |dock, cx| {
             let index = dock.add_panel(panel.clone(), self.weak_self.clone(), window, cx);
@@ -4341,7 +4341,7 @@ impl Workspace {
         if let Some(panel) = self.dock_at_position(dock_side).read(cx).active_panel() {
             telemetry::event!(
                 "Panel Button Clicked",
-                name = panel.persistent_name(),
+                name = panel.persistent_name(cx).to_string(),
                 toggle_state = !was_visible
             );
         }
@@ -7763,19 +7763,19 @@ impl Workspace {
 
         if self.left_dock.read(cx).is_open() {
             if let Some(active_panel) = self.left_dock.read(cx).active_panel() {
-                context.set("left_dock", active_panel.panel_key());
+                context.set("left_dock", active_panel.panel_key(cx));
             }
         }
 
         if self.right_dock.read(cx).is_open() {
             if let Some(active_panel) = self.right_dock.read(cx).active_panel() {
-                context.set("right_dock", active_panel.panel_key());
+                context.set("right_dock", active_panel.panel_key(cx));
             }
         }
 
         if self.bottom_dock.read(cx).is_open() {
             if let Some(active_panel) = self.bottom_dock.read(cx).active_panel() {
-                context.set("bottom_dock", active_panel.panel_key());
+                context.set("bottom_dock", active_panel.panel_key(cx));
             }
         }
 
