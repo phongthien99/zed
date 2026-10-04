@@ -1,0 +1,15 @@
+id = "source-control"
+name = "Source Control"
+description = "A Source Control panel modeled on Visual Studio Code's."
+version = "0.0.1"
+schema_version = 1
+authors = ["Zed Industries <support@zed.dev>"]
+repository = "https://github.com/zed-industries/zed"
+
+[panels.source-control]
+title = "Source Control"
+icon = "git_branch"
+default_position = "left"
+
+[[capabilities]]
+kind = "git"

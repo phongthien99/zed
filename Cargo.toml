@@ -255,7 +255,9 @@ members = [
     "extensions/glsl",
     "extensions/html",
     "extensions/proto",
+    "extensions/source-control",
     "extensions/test-extension",
+    "extensions/test-panel",
 
     #
     # Tooling

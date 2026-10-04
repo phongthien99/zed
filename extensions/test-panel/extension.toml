@@ -1,0 +1,12 @@
+id = "test-panel"
+name = "Test Panel"
+description = "An example extension panel for use in tests."
+version = "0.0.1"
+schema_version = 1
+authors = ["Zed Industries <support@zed.dev>"]
+repository = "https://github.com/zed-industries/zed"
+
+[panels.counter]
+title = "Counter"
+icon = "file_tree"
+default_position = "left"
