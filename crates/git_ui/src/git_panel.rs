@@ -56,8 +56,8 @@ use gpui::{
 use itertools::Itertools;
 use language::{Buffer, BufferEvent, File};
 use language_model::{
-    CompletionIntent, ConfiguredModel, Event as LanguageModelEvent, LanguageModelRegistry,
-    LanguageModelRequest, LanguageModelRequestMessage, Role,
+    CompletionIntent, ConfiguredModel, Event as LanguageModelEvent, LanguageModel,
+    LanguageModelRegistry, LanguageModelRequest, LanguageModelRequestMessage, Role,
 };
 use menu;
 use multi_buffer::ExcerptBoundaryInfo;
@@ -957,6 +957,15 @@ pub struct GitStatusEntry {
 }
 
 impl GitStatusEntry {
+    pub fn new(repo_path: RepoPath, status: FileStatus) -> Self {
+        Self {
+            repo_path,
+            status,
+            staging: status.staging(),
+            diff_stat: None,
+        }
+    }
+
     fn display_name(&self, path_style: PathStyle) -> String {
         self.repo_path
             .file_name()
@@ -969,6 +978,123 @@ impl GitStatusEntry {
             .parent()
             .map(|parent| parent.display(path_style).to_string())
     }
+}
+
+/// Prepares a request asking the configured commit message model to describe the staged
+/// changes of `repository`, or all of its changes when `staged_only` is false.
+///
+/// `subject` is a subject line already written by the user, which the model builds on.
+/// Fails when AI features are disabled or no commit message model is configured.
+pub fn commit_message_request(
+    repository: &Entity<Repository>,
+    project: Entity<Project>,
+    staged_only: bool,
+    subject: String,
+    cx: &mut App,
+) -> anyhow::Result<Task<anyhow::Result<(Arc<dyn LanguageModel>, LanguageModelRequest)>>> {
+    if !AgentSettings::get_global(cx).enabled(cx) {
+        anyhow::bail!("AI features are disabled");
+    }
+    let ConfiguredModel { provider, model } = LanguageModelRegistry::read_global(cx)
+        .commit_message_model(cx)
+        .context("no model is configured for generating commit messages")?;
+
+    let diff = repository.update(cx, |repo, cx| {
+        if staged_only {
+            repo.diff(DiffType::HeadToIndex, cx)
+        } else {
+            repo.diff(DiffType::HeadToWorktree, cx)
+        }
+    });
+    let temperature = AgentSettings::temperature_for_model(&model, cx);
+    let include_project_rules = AgentSettings::get_global(cx).commit_message_include_project_rules;
+    let instructions = AgentSettings::get_global(cx)
+        .commit_message_instructions
+        .clone();
+    let repo_work_dir = repository.read(cx).work_directory_abs_path.clone();
+
+    Ok(cx.spawn(async move |cx| {
+        if let Some(task) = cx.update(|cx| {
+            if !provider.is_authenticated(cx) {
+                Some(provider.authenticate(cx))
+            } else {
+                None
+            }
+        }) {
+            task.await.log_err();
+        }
+
+        let diff_text = diff.await??;
+        const MAX_DIFF_BYTES: usize = 20_000;
+        let diff_text = GitPanel::compress_commit_diff(&diff_text, MAX_DIFF_BYTES);
+
+        let rules_content = if include_project_rules {
+            GitPanel::load_project_rules(&project, &repo_work_dir, cx).await
+        } else {
+            None
+        };
+        let user_agents_md = if include_project_rules {
+            cx.update(|cx| {
+                UserAgentsMd::global(cx)
+                    .and_then(|user_agents_md| user_agents_md.content().cloned())
+            })
+        } else {
+            None
+        };
+
+        let content = GitPanel::build_commit_message_prompt(
+            include_str!("../src/commit_message_prompt.txt"),
+            user_agents_md.as_deref(),
+            rules_content.as_deref(),
+            instructions.as_deref(),
+            &subject,
+            &diff_text,
+        );
+
+        let request = LanguageModelRequest {
+            thread_id: None,
+            prompt_id: None,
+            intent: Some(CompletionIntent::GenerateGitCommitMessage),
+            messages: vec![LanguageModelRequestMessage {
+                role: Role::User,
+                content: vec![content.into()],
+                cache: false,
+                reasoning_details: None,
+            }],
+            tools: Vec::new(),
+            tool_choice: None,
+            stop: Vec::new(),
+            temperature,
+            thinking_allowed: false,
+            thinking_effort: None,
+            speed: None,
+            compact_at_tokens: None,
+        };
+        Ok((model, request))
+    }))
+}
+
+/// Generates a whole commit message for `repository`, describing its staged changes if
+/// there are any and otherwise all of its changes.
+pub fn generate_commit_message_text(
+    repository: &Entity<Repository>,
+    project: Entity<Project>,
+    cx: &mut App,
+) -> anyhow::Result<Task<anyhow::Result<String>>> {
+    let staged_only = repository
+        .read(cx)
+        .cached_status()
+        .any(|entry| entry.status.staging().has_staged());
+    let request = commit_message_request(repository, project, staged_only, String::new(), cx)?;
+    Ok(cx.spawn(async move |cx| {
+        let (model, request) = request.await?;
+        let mut messages = model.stream_completion_text(request, cx).await?;
+        let mut message = String::new();
+        while let Some(chunk) = messages.stream.next().await {
+            message.push_str(&chunk?);
+        }
+        Ok(message.trim().to_string())
+    }))
 }
 
 struct TruncatedPatch {
@@ -3667,129 +3793,45 @@ impl GitPanel {
 
     /// Generates a commit message using an LLM.
     pub fn generate_commit_message(&mut self, cx: &mut Context<Self>) {
-        if !self.can_commit() || !AgentSettings::get_global(cx).enabled(cx) {
+        if !self.can_commit() {
             return;
         }
-
-        let Some(ConfiguredModel { provider, model }) =
-            LanguageModelRegistry::read_global(cx).commit_message_model(cx)
-        else {
+        let Some(repo) = self.active_repository.clone() else {
             return;
         };
-
-        let Some(repo) = self.active_repository.as_ref() else {
+        let subject = self
+            .commit_editor
+            .read(cx)
+            .text(cx)
+            .lines()
+            .next()
+            .map(ToOwned::to_owned)
+            .unwrap_or_default();
+        let Ok(request) = commit_message_request(
+            &repo,
+            self.project.clone(),
+            self.has_staged_changes(),
+            subject.clone(),
+            cx,
+        ) else {
             return;
         };
 
         telemetry::event!("Git Commit Message Generated");
+        let text_empty = subject.trim().is_empty();
 
-        let diff = repo.update(cx, |repo, cx| {
-            if self.has_staged_changes() {
-                repo.diff(DiffType::HeadToIndex, cx)
-            } else {
-                repo.diff(DiffType::HeadToWorktree, cx)
-            }
-        });
-
-        let temperature = AgentSettings::temperature_for_model(&model, cx);
-
-        let include_project_rules =
-            AgentSettings::get_global(cx).commit_message_include_project_rules;
-
-        let instructions = AgentSettings::get_global(cx)
-            .commit_message_instructions
-            .clone();
-        let project = self.project.clone();
-        let repo_work_dir = repo.read(cx).work_directory_abs_path.clone();
-
-        self.generate_commit_message_task = Some(cx.spawn(async move |this, mut cx| {
+        self.generate_commit_message_task = Some(cx.spawn(async move |this, cx| {
             async move {
                 let _defer = cx.on_drop(&this, |this, _cx| {
                     this.generate_commit_message_task.take();
                 });
 
-                if let Some(task) = cx.update(|cx| {
-                    if !provider.is_authenticated(cx) {
-                        Some(provider.authenticate(cx))
-                    } else {
-                        None
-                    }
-                }) {
-                    task.await.log_err();
-                }
-
-                let mut diff_text = match diff.await {
-                    Ok(result) => match result {
-                        Ok(text) => text,
-                        Err(e) => {
-                            Self::show_commit_message_error(&this, &e, cx);
-                            return anyhow::Ok(());
-                        }
-                    },
+                let (model, request) = match request.await {
+                    Ok(request) => request,
                     Err(e) => {
                         Self::show_commit_message_error(&this, &e, cx);
                         return anyhow::Ok(());
                     }
-                };
-
-                const MAX_DIFF_BYTES: usize = 20_000;
-                diff_text = Self::compress_commit_diff(&diff_text, MAX_DIFF_BYTES);
-
-                let rules_content = if include_project_rules {
-                    Self::load_project_rules(&project, &repo_work_dir, &mut cx).await
-                } else {
-                    None
-                };
-                let user_agents_md = if include_project_rules {
-                    cx.update(|cx| {
-                        UserAgentsMd::global(cx)
-                            .and_then(|user_agents_md| user_agents_md.content().cloned())
-                    })
-                } else {
-                    None
-                };
-
-                let prompt = include_str!("../src/commit_message_prompt.txt");
-
-                let subject = this.update(cx, |this, cx| {
-                    this.commit_editor
-                        .read(cx)
-                        .text(cx)
-                        .lines()
-                        .next()
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_default()
-                })?;
-
-                let text_empty = subject.trim().is_empty();
-
-                let content = Self::build_commit_message_prompt(
-                    &prompt,
-                    user_agents_md.as_deref(),
-                    rules_content.as_deref(),
-                    instructions.as_deref(),
-                    &subject,
-                    &diff_text,
-                );
-
-                let request = LanguageModelRequest {
-                    thread_id: None,
-                    prompt_id: None,
-                    intent: Some(CompletionIntent::GenerateGitCommitMessage),
-                    messages: vec![LanguageModelRequestMessage {
-                        role: Role::User,
-                        content: vec![content.into()],
-                        cache: false,
-                        reasoning_details: None,
-                    }],
-                    tools: Vec::new(),
-                    tool_choice: None,
-                    stop: Vec::new(),
-                    temperature,
-                    thinking_allowed: false,
-                    thinking_effort: None,
-                    speed: None,
-                    compact_at_tokens: None,
                 };
 
                 let stream = model.stream_completion_text(request, cx);
