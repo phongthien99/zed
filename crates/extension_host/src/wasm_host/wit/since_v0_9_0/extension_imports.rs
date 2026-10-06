@@ -1,38 +1,21 @@
-use crate::wasm_host::wit::since_v0_6_0::slash_command::SlashCommandOutputSection;
-use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
 use crate::wasm_host::{
     WasmState,
     wit::{IntoWasmtimeResult, ToWasmtimeResult},
 };
-use ::http_client::{AsyncBody, HttpRequestExt};
 use ::settings::{Settings, WorktreeId};
 use anyhow::{Context as _, Result, bail};
 use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
-use async_trait::async_trait;
-use extension::{
-    ExtensionGitProxy, ExtensionHostProxy, ExtensionLanguageServerProxy, ExtensionPanelProxy,
-    KeyValueStoreDelegate, ProjectDelegate, WorktreeDelegate,
-};
-use futures::{AsyncReadExt, lock::Mutex};
+use extension::ExtensionLanguageServerProxy;
+use futures::AsyncReadExt;
 use futures::{FutureExt as _, io::BufReader};
-use gpui::{BackgroundExecutor, SharedString};
 use language::{BinaryStatus, LanguageName, language_settings::AllLanguageSettings};
 use project::project_settings::ProjectSettings;
-use semver::Version;
-use std::{
-    env,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::{Arc, OnceLock},
-};
-use task::{SpawnInTerminal, ZedDebugConfig};
+use std::path::{Path, PathBuf};
 use url::Url;
 use util::{
     archive::extract_zip, fs::make_file_executable, maybe, paths::PathStyle, rel_path::RelPath,
 };
-use wasmtime::component::{Linker, Resource};
 
 use super::*;
 

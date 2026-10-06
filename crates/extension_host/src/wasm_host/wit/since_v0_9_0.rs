@@ -1,38 +1,11 @@
-use crate::wasm_host::wit::since_v0_6_0::slash_command::SlashCommandOutputSection;
-use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
-use crate::wasm_host::{
-    WasmState,
-    wit::{IntoWasmtimeResult, ToWasmtimeResult},
-};
-use ::http_client::{AsyncBody, HttpRequestExt};
-use ::settings::{Settings, WorktreeId};
-use anyhow::{Context as _, Result, bail};
-use async_compression::futures::bufread::GzipDecoder;
-use async_tar::Archive;
-use async_trait::async_trait;
-use extension::{
-    ExtensionGitProxy, ExtensionHostProxy, ExtensionLanguageServerProxy, ExtensionPanelProxy,
-    KeyValueStoreDelegate, ProjectDelegate, WorktreeDelegate,
-};
-use futures::{AsyncReadExt, lock::Mutex};
-use futures::{FutureExt as _, io::BufReader};
-use gpui::{BackgroundExecutor, SharedString};
-use language::{BinaryStatus, LanguageName, language_settings::AllLanguageSettings};
-use project::project_settings::ProjectSettings;
+use crate::wasm_host::WasmState;
+use ::http_client::AsyncBody;
+use extension::{KeyValueStoreDelegate, ProjectDelegate, WorktreeDelegate};
+use futures::lock::Mutex;
+use gpui::BackgroundExecutor;
 use semver::Version;
-use std::{
-    env,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::{Arc, OnceLock},
-};
-use task::{SpawnInTerminal, ZedDebugConfig};
-use url::Url;
-use util::{
-    archive::extract_zip, fs::make_file_executable, maybe, paths::PathStyle, rel_path::RelPath,
-};
-use wasmtime::component::{Linker, Resource};
+use std::sync::{Arc, OnceLock};
+use wasmtime::component::Linker;
 
 pub const MIN_VERSION: Version = Version::new(0, 9, 0);
 pub const MAX_VERSION: Version = Version::new(0, 9, 0);
@@ -56,6 +29,7 @@ wasmtime::component::bindgen!({
 pub use self::zed::extension::*;
 
 mod conversions;
+mod debug_conversions;
 mod extension_imports;
 mod git_host;
 mod host;
@@ -79,4 +53,3 @@ pub fn linker(executor: &BackgroundExecutor) -> &'static Linker<WasmState> {
         })
     })
 }
-
